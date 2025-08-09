@@ -9,9 +9,13 @@ import os
 # Try to import PDF libraries
 _pdf_backend = None
 try:
+    # ReportLab preferred, import platypus helpers too
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.pdfgen import canvas
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
     _pdf_backend = "reportlab"
 except Exception:
     try:
@@ -251,12 +255,16 @@ def fetch_payments(transaction_id):
     conn.close()
     return df
 
-# PDF receipt generator
+# ----------------- NEW / UPDATED RECEIPT FUNCTIONS -----------------
 def generate_payment_receipt_bytes(payment_id):
+    """
+    Generate a styled PDF receipt for a payment, including the list of products in that transaction.
+    Returns bytes or None.
+    """
     conn = create_connection()
     c = conn.cursor()
     c.execute("""
-        SELECT p.id, p.amount, p.method, p.date, p.transaction_id, cu.name
+        SELECT p.id, p.amount, p.method, p.date, p.transaction_id, cu.name, ct.status
         FROM payments p
         JOIN credit_transactions ct ON p.transaction_id = ct.id
         JOIN customers cu ON ct.customer_id = cu.id
@@ -266,11 +274,176 @@ def generate_payment_receipt_bytes(payment_id):
     conn.close()
     if not row:
         return None
-    pid, amount, method, pdate, txid, customer_name = row
+    pid, amount, method, pdate, txid, customer_name, tx_status = row
 
-    # Also fetch totals for that transaction
+    # fetch items for this transaction (include transaction date for purchase date)
     conn2 = create_connection()
     c2 = conn2.cursor()
+    c2.execute("""
+        SELECT p.name, ci.quantity, ci.unit_price, ci.total_price, ct.date
+        FROM credit_items ci
+        JOIN products p ON ci.product_id = p.id
+        JOIN credit_transactions ct ON ci.transaction_id = ct.id
+        WHERE ci.transaction_id = ?
+        ORDER BY ct.date ASC, p.name ASC
+    """, (txid,))
+    items = c2.fetchall()
+
+    # totals for the whole transaction
+    c2.execute("SELECT COALESCE(SUM(total_price),0) FROM credit_items WHERE transaction_id=?", (txid,))
+    total_tx = c2.fetchone()[0] or 0.0
+    c2.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE transaction_id=?", (txid,))
+    total_paid = c2.fetchone()[0] or 0.0
+    conn2.close()
+
+    # Build PDF with ReportLab (preferred) or FPDF fallback
+    if _pdf_backend == "reportlab":
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                leftMargin=12*mm, rightMargin=12*mm,
+                                topMargin=12*mm, bottomMargin=12*mm)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        # Customer name at top (Title)
+        elements.append(Paragraph(customer_name, styles['Title']))
+        elements.append(Spacer(1, 6))
+
+        # Payment & transaction details (small)
+        small = styles['Normal']
+        small.spaceAfter = 2
+        elements.append(Paragraph(f"<b>Receipt ID:</b> {pid}", small))
+        elements.append(Paragraph(f"<b>Transaction ID:</b> {txid}", small))
+        elements.append(Paragraph(f"<b>Status:</b> {tx_status}", small))
+        elements.append(Paragraph(f"<b>Payment Method:</b> {method}", small))
+        elements.append(Paragraph(f"<b>Payment Date:</b> {pdate}", small))
+        elements.append(Paragraph(f"<b>Amount Paid:</b> Kshs {amount:,.2f}", small))
+        elements.append(Spacer(1, 8))
+
+        # Products table header + rows
+        data = [["Product", "Qty", "Unit Price", "Total", "Date Purchased"]]
+        for it in items:
+            pname, qty, up, totp, datep = it
+            data.append([pname, str(qty), f"Kshs {up:,.2f}", f"Kshs {totp:,.2f}", str(datep)])
+
+        # Totals rows
+        data.append(["", "", "Total Transaction:", f"Kshs {total_tx:,.2f}", ""])
+        data.append(["", "", "Total Paid (incl this):", f"Kshs {total_paid:,.2f}", ""])
+
+        # wide column widths to create a modern wide invoice look
+        col_widths = [80*mm, 20*mm, 30*mm, 30*mm, 30*mm]
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+        style = TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f2f2f2")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.black),
+            ("ALIGN", (1,1), (-2,-1), "CENTER"),
+            ("ALIGN", (-3,1), (-1,-1), "RIGHT"),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1, -1), 9),
+            ("BOTTOMPADDING", (0,0), (-1,0), 8),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cccccc")),
+            ("BACKGROUND", (0,1), (-1,-1), colors.white),
+            ("ROWBACKGROUNDS", (1,1), (-1,-1), [colors.white, colors.HexColor("#fbfbfb")]),
+            ("SPAN", (0, len(data)-2), (1, len(data)-2)),  # merge for total label (layout friendly)
+            ("SPAN", (0, len(data)-1), (1, len(data)-1)),
+            ("ALIGN", (2, len(data)-2), (3, len(data)-2), "RIGHT"),
+            ("ALIGN", (2, len(data)-1), (3, len(data)-1), "RIGHT"),
+            ("FONTNAME", (2, len(data)-2), (3, len(data)-1), "Helvetica-Bold")
+        ])
+        table.setStyle(style)
+        elements.append(table)
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    elif _pdf_backend == "fpdf":
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        # Header - customer name
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 8, customer_name, ln=True)
+        pdf.ln(2)
+
+        pdf.set_font("Arial", size=10)
+        pdf.cell(0, 6, f"Receipt ID: {pid}    Transaction ID: {txid}", ln=True)
+        pdf.cell(0, 6, f"Status: {tx_status}    Method: {method}    Payment Date: {pdate}", ln=True)
+        pdf.cell(0, 6, f"Amount Paid: Kshs {amount:,.2f}", ln=True)
+        pdf.ln(4)
+
+        # Table header
+        pdf.set_font("Arial", "B", 10)
+        w_prod = 80
+        w_qty = 18
+        w_unit = 30
+        w_total = 30
+        w_date = 32
+        pdf.cell(w_prod, 8, "Product", border=1)
+        pdf.cell(w_qty, 8, "Qty", border=1, align="C")
+        pdf.cell(w_unit, 8, "Unit Price", border=1, align="R")
+        pdf.cell(w_total, 8, "Total", border=1, align="R")
+        pdf.cell(w_date, 8, "Date", border=1, align="C")
+        pdf.ln()
+
+        pdf.set_font("Arial", size=9)
+        for it in items:
+            pname, qty, up, totp, datep = it
+            pdf.cell(w_prod, 7, str(pname)[:40], border=1)  # truncated to fit
+            pdf.cell(w_qty, 7, str(qty), border=1, align="C")
+            pdf.cell(w_unit, 7, f"Kshs {up:,.2f}", border=1, align="R")
+            pdf.cell(w_total, 7, f"Kshs {totp:,.2f}", border=1, align="R")
+            pdf.cell(w_date, 7, str(datep), border=1, align="C")
+            pdf.ln()
+
+        # Totals
+        pdf.ln(2)
+        pdf.set_font("Arial", "B", 10)
+        # Position totals on the right
+        pdf.set_x(w_prod + w_qty)
+        pdf.cell(w_unit, 7, "Total Transaction:", border=0)
+        pdf.cell(w_total, 7, f"Kshs {total_tx:,.2f}", border=1, align="R")
+        pdf.ln()
+        pdf.set_x(w_prod + w_qty)
+        pdf.cell(w_unit, 7, "Total Paid (incl this):", border=0)
+        pdf.cell(w_total, 7, f"Kshs {total_paid:,.2f}", border=1, align="R")
+
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+        return pdf_bytes
+
+    else:
+        return None
+
+def generate_transaction_receipt_bytes(transaction_id):
+    """
+    Generate a transaction-level invoice/receipt (transaction may be unpaid).
+    Includes product list and totals. File named with transaction id.
+    """
+    conn = create_connection()
+    c = conn.cursor()
+    c.execute("""
+        SELECT ct.id, cu.name, ct.date, ct.status
+        FROM credit_transactions ct
+        JOIN customers cu ON ct.customer_id = cu.id
+        WHERE ct.id = ?
+    """, (transaction_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    txid, customer_name, tx_date, tx_status = row
+
+    # fetch items
+    conn2 = create_connection()
+    c2 = conn2.cursor()
+    c2.execute("""
+        SELECT p.name, ci.quantity, ci.unit_price, ci.total_price, ct.date
+        FROM credit_items ci
+        JOIN products p ON ci.product_id = p.id
+        JOIN credit_transactions ct ON ci.transaction_id = ct.id
+        WHERE ci.transaction_id = ?
+        ORDER BY ct.date ASC, p.name ASC
+    """, (txid,))
+    items = c2.fetchall()
     c2.execute("SELECT COALESCE(SUM(total_price),0) FROM credit_items WHERE transaction_id=?", (txid,))
     total_tx = c2.fetchone()[0] or 0.0
     c2.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE transaction_id=?", (txid,))
@@ -279,50 +452,98 @@ def generate_payment_receipt_bytes(payment_id):
 
     if _pdf_backend == "reportlab":
         buffer = BytesIO()
-        cpdf = canvas.Canvas(buffer, pagesize=A4)
-        width, height = A4
-        left = 20 * mm
-        top = height - 20 * mm
-        cpdf.setFont("Helvetica-Bold", 14)
-        cpdf.drawString(left, top, "Payment Receipt")
-        cpdf.setFont("Helvetica", 10)
-        y = top - 12 * mm
-        cpdf.drawString(left, y, f"Receipt ID: {pid}")
-        y -= 6 * mm
-        cpdf.drawString(left, y, f"Customer: {customer_name}")
-        y -= 6 * mm
-        cpdf.drawString(left, y, f"Transaction ID: {txid}")
-        y -= 6 * mm
-        cpdf.drawString(left, y, f"Amount Paid: Kshs. {amount:,.2f}")
-        y -= 6 * mm
-        cpdf.drawString(left, y, f"Method: {method}")
-        y -= 6 * mm
-        cpdf.drawString(left, y, f"Payment Date: {pdate}")
-        y -= 8 * mm
-        cpdf.drawString(left, y, f"Total Transaction Amount: Kshs. {total_tx:,.2f}")
-        y -= 6 * mm
-        cpdf.drawString(left, y, f"Total Paid (incl this): Kshs. {total_paid:,.2f}")
-        cpdf.showPage()
-        cpdf.save()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                leftMargin=12*mm, rightMargin=12*mm,
+                                topMargin=12*mm, bottomMargin=12*mm)
+        styles = getSampleStyleSheet()
+        elements = []
+
+        elements.append(Paragraph(customer_name, styles['Title']))
+        elements.append(Spacer(1, 6))
+        small = styles['Normal']
+        elements.append(Paragraph(f"<b>Transaction ID:</b> {txid}", small))
+        elements.append(Paragraph(f"<b>Transaction Date:</b> {tx_date}", small))
+        elements.append(Paragraph(f"<b>Status:</b> {tx_status}", small))
+        elements.append(Spacer(1, 8))
+
+        data = [["Product", "Qty", "Unit Price", "Total", "Date Purchased"]]
+        for it in items:
+            pname, qty, up, totp, datep = it
+            data.append([pname, str(qty), f"Kshs {up:,.2f}", f"Kshs {totp:,.2f}", str(datep)])
+        data.append(["", "", "Total Transaction:", f"Kshs {total_tx:,.2f}", ""])
+        data.append(["", "", "Total Paid:", f"Kshs {total_paid:,.2f}", ""])
+
+        col_widths = [80*mm, 20*mm, 30*mm, 30*mm, 30*mm]
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+        style = TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#f2f2f2")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.black),
+            ("ALIGN", (1,1), (-2,-1), "CENTER"),
+            ("ALIGN", (-3,1), (-1,-1), "RIGHT"),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,-1), 9),
+            ("BOTTOMPADDING", (0,0), (-1,0), 8),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cccccc")),
+            ("BACKGROUND", (0,1), (-1,-1), colors.white),
+            ("ROWBACKGROUNDS", (1,1), (-1,-1), [colors.white, colors.HexColor("#fbfbfb")]),
+            ("SPAN", (0, len(data)-2), (1, len(data)-2)),
+            ("SPAN", (0, len(data)-1), (1, len(data)-1)),
+            ("ALIGN", (2, len(data)-2), (3, len(data)-1), "RIGHT"),
+            ("FONTNAME", (2, len(data)-2), (3, len(data)-1), "Helvetica-Bold")
+        ])
+        table.setStyle(style)
+        elements.append(table)
+        doc.build(elements)
         buffer.seek(0)
         return buffer.getvalue()
+
     elif _pdf_backend == "fpdf":
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        pdf.cell(0, 8, "Payment Receipt", ln=True)
-        pdf.cell(0, 6, f"Receipt ID: {pid}", ln=True)
-        pdf.cell(0, 6, f"Customer: {customer_name}", ln=True)
-        pdf.cell(0, 6, f"Transaction ID: {txid}", ln=True)
-        pdf.cell(0, 6, f"Amount Paid: Kshs. {amount:,.2f}", ln=True)
-        pdf.cell(0, 6, f"Method: {method}", ln=True)
-        pdf.cell(0, 6, f"Payment Date: {pdate}", ln=True)
-        pdf.cell(0, 6, f"Total Transaction Amount: Kshs. {total_tx:,.2f}", ln=True)
-        pdf.cell(0, 6, f"Total Paid (incl this): Kshs. {total_paid:,.2f}", ln=True)
-        out = BytesIO()
-        pdf.output(out)
-        out.seek(0)
-        return out.getvalue()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 8, customer_name, ln=True)
+        pdf.ln(2)
+        pdf.set_font("Arial", size=10)
+        pdf.cell(0, 6, f"Transaction ID: {txid}    Date: {tx_date}    Status: {tx_status}", ln=True)
+        pdf.ln(4)
+
+        pdf.set_font("Arial", "B", 10)
+        w_prod = 80
+        w_qty = 18
+        w_unit = 30
+        w_total = 30
+        w_date = 32
+        pdf.cell(w_prod, 8, "Product", border=1)
+        pdf.cell(w_qty, 8, "Qty", border=1, align="C")
+        pdf.cell(w_unit, 8, "Unit Price", border=1, align="R")
+        pdf.cell(w_total, 8, "Total", border=1, align="R")
+        pdf.cell(w_date, 8, "Date", border=1, align="C")
+        pdf.ln()
+
+        pdf.set_font("Arial", size=9)
+        for it in items:
+            pname, qty, up, totp, datep = it
+            pdf.cell(w_prod, 7, str(pname)[:40], border=1)
+            pdf.cell(w_qty, 7, str(qty), border=1, align="C")
+            pdf.cell(w_unit, 7, f"Kshs {up:,.2f}", border=1, align="R")
+            pdf.cell(w_total, 7, f"Kshs {totp:,.2f}", border=1, align="R")
+            pdf.cell(w_date, 7, str(datep), border=1, align="C")
+            pdf.ln()
+
+        pdf.ln(2)
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_x(w_prod + w_qty)
+        pdf.cell(w_unit, 7, "Total:", border=0)
+        pdf.cell(w_total, 7, f"Kshs {total_tx:,.2f}", border=1, align="R")
+        pdf.ln()
+        pdf.set_x(w_prod + w_qty)
+        pdf.cell(w_unit, 7, "Total Paid:", border=0)
+        pdf.cell(w_total, 7, f"Kshs {total_paid:,.2f}", border=1, align="R")
+
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+        return pdf_bytes
+
     else:
         return None
 
@@ -383,7 +604,6 @@ with tab_new:
                 })
                 st.rerun()
 
-
         # show cart
         st.markdown("### Cart")
         if st.session_state.cart:
@@ -405,12 +625,12 @@ with tab_new:
                     st.session_state.cart = []
                     st.rerun()
             with col_clear:
-                if st.button("Clear Cart"):
+                if st.button("🗑️ Clear Cart"):
                     st.session_state.cart = []
                     st.rerun()
 
         else:
-            st.info("Cart is empty. Add products above.")
+            st.info("Cart is empty.")
 
 # ---------------- Tab: Dashboard & Manage ----------------
 with tab_manage:
@@ -483,6 +703,17 @@ with tab_manage:
             with cols[4]:
                 st.write(f"**Status:** {status}")
             with cols[5]:
+                # Transaction-level Download button (visible in table row)
+                tx_pdf = generate_transaction_receipt_bytes(tid)
+                if tx_pdf:
+                    st.download_button(
+                        label="📥 Download Receipt",
+                        data=tx_pdf,
+                        file_name=f"receipt_tx{tid}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_tx_{tid}"
+                    )
+
                 if st.button("✅ Mark as Paid", key=f"markpaid_{tid}"):
                     # create balancing payment if needed
                     if balance > 0:
@@ -492,10 +723,12 @@ with tab_manage:
                     recalc_balance(tid)
                     st.success("Marked as Paid.")
                     st.rerun()
+
                 if st.button("🗑️ Delete", key=f"del_{tid}"):
                     delete_transaction(tid)
                     st.warning("Transaction deleted.")
                     st.rerun()
+
 
             # details expander
             with st.expander("View items & payments", expanded=False):
@@ -522,10 +755,9 @@ with tab_manage:
                             new_up = st.number_input(f"Unit item {item_id}", min_value=0.00, value=float(it['unit_price']), format="%.2f", key=f"ip_{item_id}")
                         with col_d:
                             if st.button("Save", key=f"save_item_{item_id}"):
-                                update_credit_item(item_id, int(new_qty), float(new_up))
-                                st.success("Item updated.")
-                                st.rerun()
-
+                                         update_credit_item(item_id, int(new_qty), float(new_up))
+                                         st.success("Item updated.")
+                                         st.rerun()
                 payments_df = fetch_payments(tid)
                 if not payments_df.empty:
                     display_payments = payments_df.copy()
@@ -541,8 +773,16 @@ with tab_manage:
                                 delete_payment(pay_id)
                                 st.warning(f"Payment {pay_id} deleted.")
                                 st.rerun()
-
-                # record a new payment for this transaction
+                        pdf_bytes = generate_payment_receipt_bytes(pay_id)
+                        if pdf_bytes:
+                            st.download_button(
+                                label="📥 Download Receipt (PDF)",
+                                data=pdf_bytes,
+                                file_name=f"receipt_{pay_id}.pdf",
+                                mime="application/pdf",
+                                key=f"dl_receipt_{tid}_{idx}"    
+                            )
+                # ----------------- HERE IS THE UPDATED PAYMENT FORM AND DOWNLOAD BUTTON -----------------
                 with st.form(f"payment_form_{tid}", clear_on_submit=True):
                     st.markdown("**Record Payment**")
                     pcol1, pcol2, pcol3 = st.columns([2,1,1])
@@ -557,16 +797,30 @@ with tab_manage:
                         if pay_amount > 0:
                             pid = record_payment(tid, float(pay_amount), pay_method, pay_date.strftime("%Y-%m-%d"))
                             st.success("Payment recorded.")
-                            # offer PDF receipt if possible
                             pdf_bytes = generate_payment_receipt_bytes(pid)
                             if pdf_bytes:
-                                st.download_button("📥 Download Receipt (PDF)", data=pdf_bytes, file_name=f"receipt_{pid}.pdf", mime="application/pdf")
+                                # Store PDF bytes in session state using payment id key
+                                st.session_state[f"receipt_{pid}"] = pdf_bytes
                             else:
                                 st.info("PDF receipt not available — install reportlab or fpdf.")
                             st.rerun()
+
                         else:
                             st.warning("Enter amount > 0")
 
+                # Outside the form: show download button if receipt available in session state
+                for key in list(st.session_state.keys()):
+                    if key.startswith("receipt_") and st.session_state[key] is not None:
+                        st.download_button(
+                            label="📥 Download Receipt (PDF)",
+                            data=st.session_state[key],
+                            file_name=f"{key}.pdf",
+                            mime="application/pdf",
+                            key=f"dl_{key}"
+                        )
+                        # Uncomment below if you want to clear the receipt after download to clean up UI
+                        # del st.session_state[key]
+            
     # Export grouped view to excel
     st.markdown("---")
     export_df = []
@@ -589,3 +843,4 @@ with tab_manage:
         st.download_button("📥 Export Accounts (Excel)", data=excel_bytes, file_name="credit_accounts.xlsx")
 
 # End of script
+          

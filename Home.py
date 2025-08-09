@@ -19,7 +19,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# ---------- Full-page gradient background ----------
+# ---------- Background ----------
 st.markdown(
     """
     <style>
@@ -31,22 +31,21 @@ st.markdown(
         inset: 0;
         z-index: -999999;
         pointer-events: none;
-        background: linear-gradient(135deg, #4facfe 0%, #FFECDB 40%, #9be7ff 100%); /* cool blue -> aqua */
+        background: linear-gradient(135deg, #57B4BA 0%, #d9e4ec 100%);
     }
     #bg::after {
         content: "";
         position: absolute;
         inset: 0;
-        background: radial-gradient(circle at 10% 10%, rgba(255,255,255,0.03), transparent 10%),
-                    radial-gradient(circle at 90% 90%, rgba(0,0,0,0.02), transparent 10%);
+        background: radial-gradient(circle at 10% 10%, rgba(255,255,255,0.05), transparent 10%),
+                    radial-gradient(circle at 90% 90%, rgba(0,0,0,0.03), transparent 10%);
         mix-blend-mode: overlay;
-        pointer-events: none;
     }
 
     /* ==== Card Styles ==== */
     .stButton > button {
         width: 100%;
-        height: 170px; /* fixed height for equal size */
+        height: 180px;
         border-radius: 20px;
         color: white;
         font-weight: 700;
@@ -59,13 +58,49 @@ st.markdown(
         align-items: center;
         justify-content: center;
         text-align: center;
-        white-space: normal; /* allow wrapping */
         line-height: 1.3;
-        transition: transform 0.22s ease, box-shadow 0.22s ease;
+        transition: transform 0.25s ease, box-shadow 0.25s ease, filter 0.25s ease;
     }
     .stButton > button:hover {
         transform: translateY(-6px);
-        box-shadow: 0 12px 30px rgba(8, 30, 60, 0.18);
+        filter: brightness(1.15);
+    }
+
+    /* Icon Styling */
+    .card-icon {
+        font-size: 48px;
+        margin-bottom: 10px;
+        display: block;
+        transition: color 0.3s ease;
+    }
+
+    /* Icon hover colors + glow matching gradient */
+    div.stButton > button[key='Customers']:hover {
+        box-shadow: 0 0 20px rgba(0,242,254,0.6);
+    }
+    div.stButton > button[key='Customers']:hover .card-icon {
+        color: #00f2fe;
+    }
+
+    div.stButton > button[key='Products']:hover {
+        box-shadow: 0 0 20px rgba(56,249,215,0.6);
+    }
+    div.stButton > button[key='Products']:hover .card-icon {
+        color: #38f9d7;
+    }
+
+    div.stButton > button[key='Transactions']:hover {
+        box-shadow: 0 0 20px rgba(240,147,251,0.6);
+    }
+    div.stButton > button[key='Transactions']:hover .card-icon {
+        color: #f093fb;
+    }
+
+    div.stButton > button[key='Payments']:hover {
+        box-shadow: 0 0 20px rgba(255,154,158,0.6);
+    }
+    div.stButton > button[key='Payments']:hover .card-icon {
+        color: #ff9a9e;
     }
     </style>
     <div id="bg"></div>
@@ -80,18 +115,21 @@ st.markdown("Click a card below to navigate:")
 
 # ==== CARD DATA ====
 cards = [
-    {"icon": "👥", "label": "1_📇_Customers",           "bg": "linear-gradient(135deg,#4facfe,#00f2fe)"},
-    {"icon": "📦", "label": "2_📦_Products",            "bg": "linear-gradient(135deg,#43e97b,#38f9d7)"},
-    {"icon": "💳", "label": "3_💳_Credit_Transactions", "bg": "linear-gradient(135deg,#f093fb,#f5576c)"},
-    {"icon": "💰", "label": "4_💰_Payments",            "bg": "linear-gradient(135deg,#fad0c4,#ff9a9e)"},
+    {"icon": "👥", "label": "Customers",    "file": "1_📇_Customers.py",           "bg": "linear-gradient(135deg,#4facfe,#00f2fe)"},
+    {"icon": "📦", "label": "Products",     "file": "2_📦_Products.py",            "bg": "linear-gradient(135deg,#43e97b,#38f9d7)"},
+    {"icon": "💳", "label": "Transactions", "file": "3_💳_Credit_Transactions.py", "bg": "linear-gradient(135deg,#f093fb,#f5576c)"},
+    {"icon": "💰", "label": "Payments",     "file": "4_💰_Payments.py",            "bg": "linear-gradient(135deg,#fad0c4,#ff9a9e)"},
 ]
 
 cols = st.columns(2, gap="large")
 
+# ==== Render Cards ====
 for i, card in enumerate(cards):
     with cols[i % 2]:
-        if st.button(f"{card['icon']}\n{card['label']}", key=card['label'], help=f"Go to {card['label']}"):
-            st.switch_page(f"pages/{card['label']}.py")
+        if st.button(f"{card['icon']}\n{card['label']}", key=card['label'], help=f"Go to {card['label']} page"):
+                     st.switch_page(f"pages/{card['file']}")
+                     
+            
         st.markdown(
             f"<style>div.stButton > button[key='{card['label']}'] {{ background: {card['bg']}; }}</style>",
             unsafe_allow_html=True
