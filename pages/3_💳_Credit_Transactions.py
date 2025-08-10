@@ -795,26 +795,26 @@ with tab_manage:
                     with pcol3:
                         pay_date = st.date_input("Payment Date", value=date.today(), key=f"paydate_{tid}")
                     pay_submit = st.form_submit_button("Save Payment")
-                    # if pay_submit:
-                    #     if pay_amount > 0:
-                    #         pid = record_payment(tid, float(pay_amount), pay_method, pay_date.strftime("%Y-%m-%d"))
-                    #         st.success("Payment recorded.")
-                    #         pdf_bytes = generate_payment_receipt_bytes(pid)
-                    #         if pdf_bytes:
-                    #             st.download_button(
-                    #                 label="📥 Download Receipt (PDF)",
-                    #                 data=pdf_bytes,
-                    #                 file_name=f"receipt_{pid}.pdf",
-                    #                 mime="application/pdf",
-                    #                 key=f"dl_receipt_{pid}"
-                    #             )
+                    if pay_submit:
+                        if pay_amount > 0:
+                            pid = record_payment(tid, float(pay_amount), pay_method, pay_date.strftime("%Y-%m-%d"))
+                            st.success("Payment recorded.")
+                            pdf_bytes = generate_payment_receipt_bytes(pid)
+                            if pdf_bytes:
+                                st.download_button(
+                                    label="📥 Download Receipt (PDF)",
+                                    data=pdf_bytes,
+                                    file_name=f"receipt_{pid}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_receipt_{pid}"
+                                )
                                 
-                    #         else:
-                    #             st.info("PDF receipt not available — install reportlab or fpdf.")
+                            else:
+                                st.info("PDF receipt not available — install reportlab or fpdf.")
                           
 
-                    #     else:
-                    #         st.warning("Enter amount > 0")
+                        else:
+                            st.warning("Enter amount > 0")
 
                 # Outside the form: show download button if receipt available in session state
                 # for key in list(st.session_state.keys()):
