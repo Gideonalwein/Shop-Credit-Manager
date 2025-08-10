@@ -413,11 +413,13 @@ def generate_payment_receipt_bytes(payment_id):
     else:
         return None
 
+
 def generate_transaction_receipt_bytes(transaction_id):
     """
     Generate a transaction-level invoice/receipt (transaction may be unpaid).
-    Includes product list and totals. File named with transaction id.
+    Includes product list and totals. Returns raw PDF bytes for safe Streamlit use.
     """
+    # --- Fetch transaction info ---
     conn = create_connection()
     c = conn.cursor()
     c.execute("""
@@ -429,10 +431,11 @@ def generate_transaction_receipt_bytes(transaction_id):
     row = c.fetchone()
     conn.close()
     if not row:
-        return None
+        return b""
+
     txid, customer_name, tx_date, tx_status = row
 
-    # fetch items
+    # --- Fetch items ---
     conn2 = create_connection()
     c2 = conn2.cursor()
     c2.execute("""
@@ -450,25 +453,24 @@ def generate_transaction_receipt_bytes(transaction_id):
     total_paid = c2.fetchone()[0] or 0.0
     conn2.close()
 
+    # --- ReportLab backend ---
     if _pdf_backend == "reportlab":
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4,
-                                leftMargin=12*mm, rightMargin=12*mm,
-                                topMargin=12*mm, bottomMargin=12*mm)
+                                 leftMargin=12*mm, rightMargin=12*mm,
+                                 topMargin=12*mm, bottomMargin=12*mm)
         styles = getSampleStyleSheet()
-        elements = []
-
-        elements.append(Paragraph(customer_name, styles['Title']))
-        elements.append(Spacer(1, 6))
-        small = styles['Normal']
-        elements.append(Paragraph(f"<b>Transaction ID:</b> {txid}", small))
-        elements.append(Paragraph(f"<b>Transaction Date:</b> {tx_date}", small))
-        elements.append(Paragraph(f"<b>Status:</b> {tx_status}", small))
-        elements.append(Spacer(1, 8))
+        elements = [
+            Paragraph(customer_name, styles['Title']),
+            Spacer(1, 6),
+            Paragraph(f"<b>Transaction ID:</b> {txid}", styles['Normal']),
+            Paragraph(f"<b>Transaction Date:</b> {tx_date}", styles['Normal']),
+            Paragraph(f"<b>Status:</b> {tx_status}", styles['Normal']),
+            Spacer(1, 8)
+        ]
 
         data = [["Product", "Qty", "Unit Price", "Total", "Date Purchased"]]
-        for it in items:
-            pname, qty, up, totp, datep = it
+        for pname, qty, up, totp, datep in items:
             data.append([pname, str(qty), f"Kshs {up:,.2f}", f"Kshs {totp:,.2f}", str(datep)])
         data.append(["", "", "Total Transaction:", f"Kshs {total_tx:,.2f}", ""])
         data.append(["", "", "Total Paid:", f"Kshs {total_paid:,.2f}", ""])
@@ -484,7 +486,6 @@ def generate_transaction_receipt_bytes(transaction_id):
             ("FONTSIZE", (0,0), (-1,-1), 9),
             ("BOTTOMPADDING", (0,0), (-1,0), 8),
             ("GRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cccccc")),
-            ("BACKGROUND", (0,1), (-1,-1), colors.white),
             ("ROWBACKGROUNDS", (1,1), (-1,-1), [colors.white, colors.HexColor("#fbfbfb")]),
             ("SPAN", (0, len(data)-2), (1, len(data)-2)),
             ("SPAN", (0, len(data)-1), (1, len(data)-1)),
@@ -495,8 +496,9 @@ def generate_transaction_receipt_bytes(transaction_id):
         elements.append(table)
         doc.build(elements)
         buffer.seek(0)
-        return buffer.getvalue()
+        return buffer.read()
 
+    # --- FPDF backend ---
     elif _pdf_backend == "fpdf":
         pdf = FPDF()
         pdf.add_page()
@@ -509,11 +511,7 @@ def generate_transaction_receipt_bytes(transaction_id):
         pdf.ln(4)
 
         pdf.set_font("Arial", "B", 10)
-        w_prod = 80
-        w_qty = 18
-        w_unit = 30
-        w_total = 30
-        w_date = 32
+        w_prod, w_qty, w_unit, w_total, w_date = 80, 18, 30, 30, 32
         pdf.cell(w_prod, 8, "Product", border=1)
         pdf.cell(w_qty, 8, "Qty", border=1, align="C")
         pdf.cell(w_unit, 8, "Unit Price", border=1, align="R")
@@ -522,8 +520,7 @@ def generate_transaction_receipt_bytes(transaction_id):
         pdf.ln()
 
         pdf.set_font("Arial", size=9)
-        for it in items:
-            pname, qty, up, totp, datep = it
+        for pname, qty, up, totp, datep in items:
             pdf.cell(w_prod, 7, str(pname)[:40], border=1)
             pdf.cell(w_qty, 7, str(qty), border=1, align="C")
             pdf.cell(w_unit, 7, f"Kshs {up:,.2f}", border=1, align="R")
@@ -541,11 +538,9 @@ def generate_transaction_receipt_bytes(transaction_id):
         pdf.cell(w_unit, 7, "Total Paid:", border=0)
         pdf.cell(w_total, 7, f"Kshs {total_paid:,.2f}", border=1, align="R")
 
-        pdf_bytes = pdf.output(dest='S').encode('latin1')
-        return pdf_bytes
+        return pdf.output(dest='S').encode('latin1')
 
-    else:
-        return None
+    return b""
 
 # ---------- UI Implementation ----------
 migrate_schema()
@@ -704,26 +699,24 @@ with tab_manage:
                 st.write(f"**Status:** {status}")
             with cols[5]:
                 # Transaction-level Download button (visible in table row)
-                # Always store raw PDF bytes in session_state
                 tx_pdf = generate_transaction_receipt_bytes(tid)
 
-                # If the function returns a path, read it into bytes
-                if isinstance(tx_pdf, str):  # path to file
-                    with open(tx_pdf, "rb") as f:
-                        tx_pdf = f.read()
+                if tx_pdf:
+                    # Store raw bytes in session state to avoid .bin reference issues
+                    st.session_state[f"tx_receipt_{tid}"] = bytes(tx_pdf)
 
-                if tx_pdf:  # store in session
-                    st.session_state[f"tx_receipt_{tid}"] = tx_pdf
-
-                # Show download button using stored bytes
-                if f"tx_receipt_{tid}" in st.session_state:
+                # Always read from session_state to keep consistent behavior
+                pdf_data = st.session_state.get(f"tx_receipt_{tid}")
+                if pdf_data:
                     st.download_button(
                         label="📥 Download Receipt",
-                        data=st.session_state[f"tx_receipt_{tid}"],  # this is bytes now
+                        data=pdf_data,  # Raw bytes, not file handle
                         file_name=f"receipt_tx{tid}.pdf",
                         mime="application/pdf",
                         key=f"dl_tx_{tid}"
                     )
+
+
 
 
                 if st.button("✅ Mark as Paid", key=f"markpaid_{tid}"):
