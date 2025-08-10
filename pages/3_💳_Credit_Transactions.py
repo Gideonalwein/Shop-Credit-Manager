@@ -811,7 +811,7 @@ with tab_manage:
                                 
                             else:
                                 st.info("PDF receipt not available — install reportlab or fpdf.")
-                            st.rerun()
+                          
 
                         else:
                             st.warning("Enter amount > 0")
