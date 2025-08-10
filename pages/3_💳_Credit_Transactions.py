@@ -706,9 +706,11 @@ with tab_manage:
                 # Transaction-level Download button (visible in table row)
                 tx_pdf = generate_transaction_receipt_bytes(tid)
                 if tx_pdf:
+                    st.session_state[f"tx_receipt_{tid}"] = tx_pdf
+                if f"tx_receipt_{tid}" in st.session_state:
                     st.download_button(
                         label="📥 Download Receipt",
-                        data=tx_pdf,
+                        data=st.session_state[f"tx_receipt_{tid}"],
                         file_name=f"receipt_tx{tid}.pdf",
                         mime="application/pdf",
                         key=f"dl_tx_{tid}"
