@@ -801,8 +801,14 @@ with tab_manage:
                             st.success("Payment recorded.")
                             pdf_bytes = generate_payment_receipt_bytes(pid)
                             if pdf_bytes:
-                                # Store PDF bytes in session state using payment id key
-                                st.session_state[f"receipt_{pid}"] = pdf_bytes
+                                st.download_button(
+                                    label="📥 Download Receipt (PDF)",
+                                    data=pdf_bytes,
+                                    file_name=f"receipt_{pid}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_receipt_{pid}"
+                                )
+                                
                             else:
                                 st.info("PDF receipt not available — install reportlab or fpdf.")
                             st.rerun()
