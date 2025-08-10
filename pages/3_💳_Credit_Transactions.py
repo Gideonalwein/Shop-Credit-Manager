@@ -704,17 +704,27 @@ with tab_manage:
                 st.write(f"**Status:** {status}")
             with cols[5]:
                 # Transaction-level Download button (visible in table row)
+                # Always store raw PDF bytes in session_state
                 tx_pdf = generate_transaction_receipt_bytes(tid)
-                if tx_pdf:
+
+                # If the function returns a path, read it into bytes
+                if isinstance(tx_pdf, str):  # path to file
+                    with open(tx_pdf, "rb") as f:
+                        tx_pdf = f.read()
+
+                if tx_pdf:  # store in session
                     st.session_state[f"tx_receipt_{tid}"] = tx_pdf
+
+                # Show download button using stored bytes
                 if f"tx_receipt_{tid}" in st.session_state:
                     st.download_button(
                         label="📥 Download Receipt",
-                        data=st.session_state[f"tx_receipt_{tid}"],
+                        data=st.session_state[f"tx_receipt_{tid}"],  # this is bytes now
                         file_name=f"receipt_tx{tid}.pdf",
                         mime="application/pdf",
                         key=f"dl_tx_{tid}"
                     )
+
 
                 if st.button("✅ Mark as Paid", key=f"markpaid_{tid}"):
                     # create balancing payment if needed
