@@ -2,6 +2,20 @@ import streamlit as st
 import pandas as pd
 from database import create_connection
 
+
+
+if "logged_in" not in st.session_state or not st.session_state.logged_in:
+    st.warning("🔒 Please log in to access this page.")
+    st.switch_page("pages/0_🔑_Login.py")
+
+# Show logout button on all protected pages
+if st.button("🚪 Logout"):
+    st.session_state.logged_in = False
+    st.switch_page("pages/0_🔑_Login.py")
+
+
+
+
 # Connect to the database
 conn = create_connection()
 

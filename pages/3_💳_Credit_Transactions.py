@@ -32,6 +32,15 @@ if not os.path.exists("data"):
 st.set_page_config(page_title="Credit Transactions", page_icon="💳", layout="wide")
 st.title("💳 Credit Transactions — All-in-One")
 
+if "logged_in" not in st.session_state or not st.session_state.logged_in:
+    st.warning("🔒 Please log in to access this page.")
+    st.switch_page("pages/0_🔑_Login.py")
+
+# Show logout button on all protected pages
+if st.button("🚪 Logout"):
+    st.session_state.logged_in = False
+    st.switch_page("pages/0_🔑_Login.py")
+    
 # ---------- DB helpers & migration ----------
 def create_connection():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -714,9 +723,6 @@ with tab_manage:
                         mime="application/pdf",
                         key=f"dl_tx_{tid}"
                     )
-
-
-
 
                 if st.button("✅ Mark as Paid", key=f"markpaid_{tid}"):
                     # create balancing payment if needed

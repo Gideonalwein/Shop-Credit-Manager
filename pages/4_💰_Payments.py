@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 
+
 # ====================
 # DB CONNECTION
 # ====================
@@ -74,6 +75,15 @@ def delete_payment(payment_id):
 # ====================
 st.set_page_config(page_title="Payments", page_icon="💰", layout="wide")
 st.title("💰 Payments Management")
+
+if "logged_in" not in st.session_state or not st.session_state.logged_in:
+    st.warning("🔒 Please log in to access this page.")
+    st.switch_page("pages/0_🔑_Login.py")
+
+# Show logout button on all protected pages
+if st.button("🚪 Logout"):
+    st.session_state.logged_in = False
+    st.switch_page("pages/0_🔑_Login.py")
 
 # 1. Select Customer
 customers_df = get_customers()
